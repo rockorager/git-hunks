@@ -150,17 +150,19 @@ cmd_add() {
     extract_hunk() {
         target_file="$1"
         target_id="$2"
+        target_new="${target_id#*+}"
         
         if ! git -c color.ui=false diff --no-ext-diff -- "$target_file" >"$diff_tmp"; then
             printf '%s\n' "git diff failed for file: $target_file" >&2
             exit 1
         fi
 
-        awk -v target="$target_id" '
+        awk -v target="$target_id" -v target_new="$target_new" '
         BEGIN {
             in_header = 1
             header = ""
             in_target = 0
+            matched = 0
         }
         
         /^diff --git/ {
@@ -185,10 +187,13 @@ cmd_add() {
             raw = substr($0, RSTART + 3, RLENGTH - 6)
             gsub(/ \+/, "+", raw)
             hunk_id = "@" raw
-            
-            if (hunk_id == target) {
+            hunk_new = raw
+            sub(/^.*\+/, "", hunk_new)
+
+            if (hunk_id == target || hunk_new == target_new) {
                 printf "%s", header
                 in_target = 1
+                matched++
             } else {
                 in_target = 0
             }
@@ -196,6 +201,12 @@ cmd_add() {
         
         in_target {
             print
+        }
+
+        END {
+            if (matched > 1) {
+                exit 2
+            }
         }
         ' <"$diff_tmp"
     }
@@ -211,8 +222,15 @@ cmd_add() {
             exit 1
         fi
         
-        extract_hunk "$file" "$id" > "$tmp"
-        
+        if ! extract_hunk "$file" "$id" > "$tmp"; then
+            if [ "$?" -eq 2 ]; then
+                printf '%s\n' "Ambiguous hunk ID (matches multiple hunks by new-side anchor): $hunk_id" >&2
+            else
+                printf '%s\n' "Hunk not found: $hunk_id" >&2
+            fi
+            exit 1
+        fi
+
         if [ ! -s "$tmp" ]; then
             printf '%s\n' "Hunk not found: $hunk_id" >&2
             exit 1
